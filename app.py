@@ -971,25 +971,47 @@ def main():
         st.header("🚀 Quick Operations")
         
         if st.session_state.files_loaded:
-                # Manual cell operations
-                st.subheader("📱 Quick Fix for Your Issue")
-                st.info("🔧 **Sheet Name Problem Detected!** Use this to make the changes manually:")
+        st.divider()
+        
+        # Quick operations
+        st.header("🚀 Quick Operations")
+        
+        if st.session_state.files_loaded:
+            # Manual search
+            st.subheader("🔍 Manual Search")
+            search_query = st.text_input("Search query:", placeholder="Total Liabilities")
+            if st.button("🔍 Search") and search_query:
+                results = st.session_state.excel_processor.search_data(search_query)
+                if results:
+                    st.success(f"Found {len(results)} results")
+                    for result in results[:3]:
+                        st.text(f"📍 {result['file_name']}/{result['sheet_name']}/Row {result['row_number']}")
+                        st.text(f"📊 {result['content'][:100]}...")
+                else:
+                    st.info("No results found")
+            
+            # Manual cell operations
+            st.subheader("📱 Quick Fix for Your Issue")
+            st.info("🔧 **Sheet Name Problem Detected!** Use this to make the changes manually:")
+            
+            # Show available sheets
+            file_names = list(st.session_state.excel_processor.workbooks.keys())
+            if file_names:
+                selected_file = file_names[0]  # Auto-select first file
+                workbook = st.session_state.excel_processor.workbooks[selected_file]
+                available_sheets = workbook.sheetnames
                 
-                # Show available sheets
-                if selected_file:
-                    workbook = st.session_state.excel_processor.workbooks[selected_file]
-                    available_sheets = workbook.sheetnames
-                    
-                    st.write("**📋 Available Sheets:**")
-                    for sheet in available_sheets[:10]:  # Show first 10
-                        st.text(f"• {sheet}")
-                    
-                    if len(available_sheets) > 10:
-                        st.text(f"... and {len(available_sheets) - 10} more sheets")
+                st.write("**📋 Available Sheets:**")
+                for sheet in available_sheets[:10]:  # Show first 10
+                    st.text(f"• {sheet}")
                 
-                st.write("**✏️ Manual Edit:**")
-                
-                # Quick edit for the specific issue
+                if len(available_sheets) > 10:
+                    st.text(f"... and {len(available_sheets) - 10} more sheets")
+            
+            st.write("**✏️ Manual Edit:**")
+            
+            # Quick edit for the specific issue
+            if file_names:
                 edit_file = st.selectbox("File:", file_names, key="quick_edit_file")
                 if edit_file:
                     workbook = st.session_state.excel_processor.workbooks[edit_file]
@@ -1018,45 +1040,46 @@ def main():
                                     })
                                 else:
                                     st.error(result['error'])
+            
+            # Batch edit option
+            st.divider()
+            st.write("**🔄 Batch Edit All Sheets:**")
+            
+            if file_names and st.button("🚀 Change Company Name in ALL Sheets", type="primary", key="batch_edit"):
+                selected_file = file_names[0]  # Use first file
+                workbook = st.session_state.excel_processor.workbooks[selected_file]
+                success_count = 0
+                error_count = 0
                 
-                # Batch edit option
-                st.divider()
-                st.write("**🔄 Batch Edit All Sheets:**")
+                progress_bar = st.progress(0)
+                status_text = st.empty()
                 
-                if st.button("🚀 Change Company Name in ALL Sheets", type="primary", key="batch_edit"):
-                    if selected_file:
-                        workbook = st.session_state.excel_processor.workbooks[selected_file]
-                        success_count = 0
-                        error_count = 0
-                        
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
-                        
-                        for i, sheet_name in enumerate(workbook.sheetnames):
-                            status_text.text(f"Processing {sheet_name}...")
-                            progress_bar.progress((i + 1) / len(workbook.sheetnames))
-                            
-                            result = st.session_state.excel_processor.edit_cell(
-                                selected_file, 
-                                sheet_name, 
-                                "A1", 
-                                "BEUMER Bangladesh Pvt. Ltd."
-                            )
-                            
-                            if result['success']:
-                                success_count += 1
-                                st.session_state.ai_instructor.edit_history.append({
-                                    'timestamp': datetime.now().isoformat(),
-                                    'command': f"Batch edit: {selected_file}/{sheet_name}/A1",
-                                    'result': result
-                                })
-                            else:
-                                error_count += 1
-                        
-                        status_text.text("✅ Batch edit completed!")
-                        st.success(f"✅ Successfully updated {success_count} sheets")
-                        if error_count > 0:
-                            st.warning(f"⚠️ {error_count} sheets had errors")
+                for i, sheet_name in enumerate(workbook.sheetnames):
+                    status_text.text(f"Processing {sheet_name}...")
+                    progress_bar.progress((i + 1) / len(workbook.sheetnames))
+                    
+                    result = st.session_state.excel_processor.edit_cell(
+                        selected_file, 
+                        sheet_name, 
+                        "A1", 
+                        "BEUMER Bangladesh Pvt. Ltd."
+                    )
+                    
+                    if result['success']:
+                        success_count += 1
+                        if hasattr(st.session_state, 'ai_instructor') and st.session_state.ai_instructor:
+                            st.session_state.ai_instructor.edit_history.append({
+                                'timestamp': datetime.now().isoformat(),
+                                'command': f"Batch edit: {selected_file}/{sheet_name}/A1",
+                                'result': result
+                            })
+                    else:
+                        error_count += 1
+                
+                status_text.text("✅ Batch edit completed!")
+                st.success(f"✅ Successfully updated {success_count} sheets")
+                if error_count > 0:
+                    st.warning(f"⚠️ {error_count} sheets had errors")
             
             st.divider()
             
