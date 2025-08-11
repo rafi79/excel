@@ -109,7 +109,7 @@ class ExcelSearchEngine:
         self._build_search_index()
     
     def _process_sheet(self, sheet, file_name: str, sheet_name: str) -> Dict[str, Any]:
-        """Process sheet and extract all data"""
+        """Process sheet and extract all data with proper row/column mapping"""
         try:
             if sheet.max_row is None or sheet.max_row == 0:
                 return {'headers': [], 'data': [], 'max_row': 0, 'max_col': 0}
@@ -117,34 +117,52 @@ class ExcelSearchEngine:
             max_row = sheet.max_row
             max_col = sheet.max_column or 0
             
-            # Extract headers (row 1)
+            # Create proper column headers using Excel column letters
             headers = []
             for col in range(1, max_col + 1):
+                # Use Excel column letters (A, B, C, etc.) as primary identifier
+                excel_col = get_column_letter(col)
                 cell_value = sheet.cell(row=1, column=col).value
-                if cell_value is not None:
-                    header = str(cell_value).strip()
-                    headers.append(header if header else f"Column_{col}")
+                
+                if cell_value is not None and str(cell_value).strip():
+                    header_text = str(cell_value).strip()
+                    # Use both Excel letter and header text for clarity
+                    header = f"{excel_col}_{header_text}".replace(" ", "_").replace("&", "and")
                 else:
-                    headers.append(f"Column_{col}")
+                    header = f"Column_{excel_col}"
+                
+                headers.append(header)
             
-            # Extract all data
+            # Extract ALL rows (including row 1 as header info)
             data_rows = []
-            for row_num in range(2, max_row + 1):
+            for row_num in range(1, max_row + 1):
                 row_data = {}
                 has_data = False
                 
-                for col_num, header in enumerate(headers, 1):
+                for col_num in range(1, max_col + 1):
                     cell = sheet.cell(row=row_num, column=col_num)
                     cell_value = cell.value
+                    excel_col = get_column_letter(col_num)
+                    
+                    # Store both with header name and Excel reference
+                    if col_num <= len(headers):
+                        header_name = headers[col_num - 1]
+                    else:
+                        header_name = f"Column_{excel_col}"
                     
                     if cell_value is not None:
-                        row_data[header] = str(cell_value).strip()
+                        cell_str = str(cell_value).strip()
+                        row_data[header_name] = cell_str
+                        # Also store with simple Excel column reference
+                        row_data[f"Col_{excel_col}"] = cell_str
                         has_data = True
                     else:
-                        row_data[header] = ""
+                        row_data[header_name] = ""
+                        row_data[f"Col_{excel_col}"] = ""
                 
                 if has_data:
                     row_data['_row_number'] = row_num
+                    row_data['_excel_row'] = row_num  # Exact Excel row
                     row_data['_file_name'] = file_name
                     row_data['_sheet_name'] = sheet_name
                     data_rows.append(row_data)
@@ -156,7 +174,8 @@ class ExcelSearchEngine:
                         'row_number': row_num,
                         'excel_row': row_num,  # Actual Excel row number
                         'row_data': row_data,
-                        'headers': headers
+                        'headers': headers,
+                        'excel_reference': f"Row {row_num}"
                     })
             
             return {
@@ -388,7 +407,7 @@ class ExcelEditor:
         return {'success': False, 'error': f"Row {row_number} not found in {file_name}/{sheet_name}"}
     
     def _read_cell(self, params: str) -> Dict[str, Any]:
-        """Read specific cell: 'filename sheetname rownumber columnname'"""
+        """Read specific cell: 'filename sheetname rownumber columnname' or 'filename sheetname rownumber A/B/C'"""
         parts = params.split()
         if len(parts) < 4:
             return {'success': False, 'error': 'Invalid parameters. Use: filename sheetname rownumber columnname'}
@@ -400,7 +419,7 @@ class ExcelEditor:
         except ValueError:
             return {'success': False, 'error': 'Invalid row number'}
         
-        column_name = ' '.join(parts[3:])
+        column_identifier = ' '.join(parts[3:])
         
         # Get the workbook
         if file_name not in self.search_engine.workbooks:
@@ -412,16 +431,34 @@ class ExcelEditor:
         
         sheet = workbook[sheet_name]
         
-        # Find column by name
         col_num = None
-        for col in range(1, sheet.max_column + 1):
-            header_cell = sheet.cell(row=1, column=col)
-            if header_cell.value and str(header_cell.value).strip() == column_name:
-                col_num = col
-                break
+        
+        # Try to find column by Excel letter (A, B, C, etc.)
+        if len(column_identifier) == 1 and column_identifier.isalpha():
+            try:
+                from openpyxl.utils import column_index_from_string
+                col_num = column_index_from_string(column_identifier.upper())
+            except:
+                pass
+        
+        # If not found by letter, try by header name
+        if col_num is None:
+            for col in range(1, sheet.max_column + 1):
+                header_cell = sheet.cell(row=1, column=col)
+                if header_cell.value and str(header_cell.value).strip() == column_identifier:
+                    col_num = col
+                    break
+        
+        # Try partial matching
+        if col_num is None:
+            for col in range(1, sheet.max_column + 1):
+                header_cell = sheet.cell(row=1, column=col)
+                if header_cell.value and column_identifier.lower() in str(header_cell.value).lower():
+                    col_num = col
+                    break
         
         if col_num is None:
-            return {'success': False, 'error': f"Column '{column_name}' not found"}
+            return {'success': False, 'error': f"Column '{column_identifier}' not found. Try using Excel column letters like 'A', 'B', 'C'"}
         
         # Read the cell
         cell = sheet.cell(row=row_number, column=col_num)
@@ -431,7 +468,8 @@ class ExcelEditor:
             'success': True,
             'type': 'cell_data',
             'value': str(cell_value),
-            'location': f"{file_name}/{sheet_name}/Row {row_number}/{column_name}"
+            'location': f"{file_name}/{sheet_name}/Row {row_number}/Column {get_column_letter(col_num)}",
+            'excel_reference': f"{get_column_letter(col_num)}{row_number}"
         }
     
     def _edit_cell(self, params: str) -> Dict[str, Any]:
