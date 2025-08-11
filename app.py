@@ -651,7 +651,7 @@ if 'analysis_result' not in st.session_state:
     st.session_state.analysis_result = ""
 
 def create_excel_like_viewer(file_name: str, sheet_name: str, excel_processor: AdvancedExcelProcessor):
-    """Create Excel-like viewer with proper formatting"""
+    """Create Excel-like viewer with highlighted changes"""
     try:
         if file_name not in excel_processor.workbooks:
             st.error("File not found")
@@ -661,24 +661,36 @@ def create_excel_like_viewer(file_name: str, sheet_name: str, excel_processor: A
         sheet = workbook[sheet_name]
         
         # Create grid data
-        max_row = min(sheet.max_row, 100)  # Limit to 100 rows for display
-        max_col = min(sheet.max_column, 20)  # Limit to 20 columns
+        max_row = min(sheet.max_row, 50)  # Show more rows
+        max_col = min(sheet.max_column, 15)  # Show more columns
         
         # Create column headers (A, B, C, etc.)
         columns = ['Row'] + [get_column_letter(i) for i in range(1, max_col + 1)]
         
-        # Create data grid
+        # Create data grid with change highlighting
         grid_data = []
+        changed_cells = set()
+        
+        # Get recent edits for highlighting
+        if hasattr(st.session_state, 'ai_instructor') and st.session_state.ai_instructor:
+            for edit in st.session_state.ai_instructor.edit_history:
+                if file_name in edit['result'].get('location', ''):
+                    # Extract cell reference from location
+                    location_parts = edit['result']['location'].split('/')
+                    if len(location_parts) >= 3:
+                        cell_ref = location_parts[-1]
+                        changed_cells.add(cell_ref)
+        
         for row_num in range(1, max_row + 1):
-            row_data = [row_num]  # Row number
+            row_data = [f"📍 {row_num}"]  # Row number with emoji
             
             for col_num in range(1, max_col + 1):
                 cell = sheet.cell(row=row_num, column=col_num)
+                cell_ref = f"{get_column_letter(col_num)}{row_num}"
                 
                 # Get display value
                 if cell.value is not None:
                     if cell.data_type == 'f':  # Formula
-                        # Try to get calculated value
                         try:
                             calc_workbook = load_workbook(excel_processor.file_paths[file_name], data_only=True)
                             calc_cell = calc_workbook[sheet_name].cell(row=row_num, column=col_num)
@@ -687,6 +699,10 @@ def create_excel_like_viewer(file_name: str, sheet_name: str, excel_processor: A
                             display_value = str(cell.value)
                     else:
                         display_value = str(cell.value)
+                    
+                    # Highlight changed cells
+                    if cell_ref in changed_cells:
+                        display_value = f"🔥 {display_value}"
                 else:
                     display_value = ""
                 
@@ -700,20 +716,24 @@ def create_excel_like_viewer(file_name: str, sheet_name: str, excel_processor: A
         # Display with custom styling
         st.subheader(f"📊 {file_name} / {sheet_name}")
         
-        # Show metrics
+        # Show metrics and change indicators
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total Rows", sheet.max_row)
         col2.metric("Total Columns", sheet.max_column) 
-        col3.metric("Displayed Rows", min(sheet.max_row, 100))
-        col4.metric("Displayed Columns", min(sheet.max_column, 20))
+        col3.metric("Showing Rows", min(sheet.max_row, 50))
+        col4.metric("🔥 Changed Cells", len(changed_cells))
         
-        # Display the grid
+        # Show change legend if there are changes
+        if changed_cells:
+            st.info(f"🔥 **Recently changed cells**: {', '.join(sorted(changed_cells))}")
+        
+        # Display the grid with enhanced formatting
         st.dataframe(
             df,
             use_container_width=True,
-            height=500,
+            height=600,  # Taller for better viewing
             column_config={
-                "Row": st.column_config.NumberColumn(
+                "Row": st.column_config.TextColumn(
                     "Row",
                     help="Excel row number",
                     width="small",
@@ -721,26 +741,101 @@ def create_excel_like_viewer(file_name: str, sheet_name: str, excel_processor: A
             }
         )
         
-        # Show merged cells info if any
-        sheet_key = f"{file_name}:{sheet_name}"
-        if sheet_key in excel_processor.merged_cells_info:
-            merged_cells = excel_processor.merged_cells_info[sheet_key]
-            if merged_cells:
-                with st.expander(f"📋 Merged Cells ({len(merged_cells)})"):
-                    for merged in merged_cells:
-                        st.text(f"Range: {merged['range']}")
+        # Quick action buttons
+        st.divider()
+        col1, col2, col3, col4 = st.columns(4)
         
-        # Show formulas if any
-        if file_name in excel_processor.workbooks:
-            sheet_data = excel_processor.sheet_structures.get(f"{file_name}:{sheet_name}", {})
-            formulas = sheet_data.get('formulas', {})
-            if formulas:
-                with st.expander(f"🔬 Formulas ({len(formulas)})"):
-                    for cell_ref, formula in list(formulas.items())[:10]:  # Show first 10
-                        st.text(f"{cell_ref}: {formula}")
+        with col1:
+            # Download as CSV
+            df_clean = df.copy()
+            # Remove row column and emojis for clean CSV
+            df_clean = df_clean.drop('Row', axis=1)
+            for col in df_clean.columns:
+                df_clean[col] = df_clean[col].astype(str).str.replace('🔥 ', '', regex=False)
+            
+            csv = df_clean.to_csv(index=False)
+            st.download_button(
+                "📥 CSV",
+                data=csv,
+                file_name=f"{file_name}_{sheet_name}.csv",
+                mime="text/csv"
+            )
+        
+        with col2:
+            # Download modified Excel
+            try:
+                file_path = excel_processor.file_paths[file_name]
+                with open(file_path, 'rb') as f:
+                    excel_data = f.read()
+                
+                st.download_button(
+                    "📥 Excel",
+                    data=excel_data,
+                    file_name=f"modified_{file_name}",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            except Exception as e:
+                st.error(f"Download error: {str(e)}")
+        
+        with col3:
+            if st.button("🔍 Find Changes"):
+                if changed_cells:
+                    st.success(f"Found changes in: {', '.join(sorted(changed_cells))}")
+                else:
+                    st.info("No changes detected yet")
+        
+        with col4:
+            if st.button("🔄 Refresh Data"):
+                st.rerun()
+        
+        # Show detailed change history for this sheet
+        if hasattr(st.session_state, 'ai_instructor') and st.session_state.ai_instructor:
+            sheet_edits = [edit for edit in st.session_state.ai_instructor.edit_history 
+                          if file_name in edit['result'].get('location', '') and sheet_name in edit['result'].get('location', '')]
+            
+            if sheet_edits:
+                with st.expander(f"📝 Edit History for {sheet_name} ({len(sheet_edits)} changes)"):
+                    for i, edit in enumerate(sheet_edits, 1):
+                        st.write(f"**{i}.** {edit['timestamp'][:19]}")
+                        st.write(f"   📍 **Location**: {edit['result']['location']}")
+                        st.write(f"   🔄 **Change**: `{edit['result'].get('old_value', '')}` → `{edit['result'].get('new_value', '')}`")
+                        st.divider()
+        
+        # Show merged cells and formulas info
+        sheet_key = f"{file_name}:{sheet_name}"
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if sheet_key in excel_processor.merged_cells_info:
+                merged_cells = excel_processor.merged_cells_info[sheet_key]
+                if merged_cells:
+                    with st.expander(f"📋 Merged Cells ({len(merged_cells)})"):
+                        for merged in merged_cells[:10]:  # Show first 10
+                            st.text(f"Range: {merged['range']}")
+        
+        with col2:
+            # Show formulas
+            formulas_found = 0
+            with st.expander("🔬 Formulas Found"):
+                for row_num in range(1, min(sheet.max_row + 1, 50)):
+                    for col_num in range(1, min(sheet.max_column + 1, 15)):
+                        cell = sheet.cell(row=row_num, column=col_num)
+                        if cell.data_type == 'f':
+                            cell_ref = f"{get_column_letter(col_num)}{row_num}"
+                            st.text(f"{cell_ref}: {cell.value}")
+                            formulas_found += 1
+                            if formulas_found >= 10:  # Limit display
+                                break
+                    if formulas_found >= 10:
+                        break
+                
+                if formulas_found == 0:
+                    st.text("No formulas found in visible range")
         
     except Exception as e:
         st.error(f"Error displaying sheet: {str(e)}")
+        st.exception(e)
 
 def main():
     st.title("📊 Advanced AI Excel Editor")
@@ -899,74 +994,62 @@ def main():
                     result = st.session_state.ai_instructor.process_request(user_request, st.session_state.file_structure)
                     st.session_state.analysis_result = result
                     st.success("✅ AI request completed!")
+                    
+                    # Force rerun to show updated Excel viewer
+                    st.rerun()
+                    
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
     
-    # Excel File Viewer
+    # Excel File Viewer - Show IMMEDIATELY after files are loaded
     if st.session_state.files_loaded:
         st.divider()
-        st.header("📊 Advanced Excel Viewer")
+        st.header("📊 Live Excel Viewer")
+        st.markdown("**View your Excel files as they are being edited in real-time**")
         
-        # File and sheet selector
+        # Auto-select first file and sheet for immediate viewing
         file_names = list(st.session_state.excel_processor.workbooks.keys())
         if file_names:
-            selected_file = st.selectbox("📁 Select File:", file_names, key="viewer_file")
+            # Create columns for file/sheet selection
+            col1, col2, col3 = st.columns([1, 1, 1])
             
-            if selected_file:
-                workbook = st.session_state.excel_processor.workbooks[selected_file]
-                sheet_names = workbook.sheetnames
-                selected_sheet = st.selectbox("📋 Select Sheet:", sheet_names, key="viewer_sheet")
+            with col1:
+                selected_file = st.selectbox("📁 Select File:", file_names, key="viewer_file")
+            
+            with col2:
+                if selected_file:
+                    workbook = st.session_state.excel_processor.workbooks[selected_file]
+                    sheet_names = workbook.sheetnames
+                    selected_sheet = st.selectbox("📋 Select Sheet:", sheet_names, key="viewer_sheet")
+            
+            with col3:
+                if st.button("🔄 Refresh View", help="Refresh to see latest changes"):
+                    st.rerun()
+            
+            # Show Excel viewer immediately
+            if selected_file and selected_sheet:
+                create_excel_like_viewer(selected_file, selected_sheet, st.session_state.excel_processor)
                 
-                if selected_sheet:
-                    # Display Excel-like viewer
-                    create_excel_like_viewer(selected_file, selected_sheet, st.session_state.excel_processor)
-                    
-                    # Download options
-                    st.divider()
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        # Download as CSV
-                        df = st.session_state.excel_processor.get_sheet_dataframe(selected_file, selected_sheet)
-                        if not df.empty:
-                            csv = df.to_csv(index=False)
-                            st.download_button(
-                                "📥 Download as CSV",
-                                data=csv,
-                                file_name=f"{selected_file}_{selected_sheet}.csv",
-                                mime="text/csv"
-                            )
-                    
-                    with col2:
-                        # Download modified Excel
-                        if st.button("📥 Download Modified Excel"):
-                            try:
-                                # Save to BytesIO
-                                file_path = st.session_state.excel_processor.file_paths[selected_file]
-                                with open(file_path, 'rb') as f:
-                                    excel_data = f.read()
-                                
-                                st.download_button(
-                                    "📥 Download Excel File",
-                                    data=excel_data,
-                                    file_name=f"modified_{selected_file}",
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                                )
-                            except Exception as e:
-                                st.error(f"Error preparing download: {str(e)}")
-                    
-                    with col3:
-                        # Refresh view
-                        if st.button("🔄 Refresh View"):
-                            st.rerun()
+                # Show edit indicators
+                if st.session_state.ai_instructor and st.session_state.ai_instructor.edit_history:
+                    recent_edits = [edit for edit in st.session_state.ai_instructor.edit_history 
+                                  if selected_file in edit['result'].get('location', '')]
+                    if recent_edits:
+                        st.info(f"🔥 {len(recent_edits)} recent edits made to this file!")
     
-    # AI Results
+    # Show results AFTER the Excel viewer
     if st.session_state.analysis_result:
         st.divider()
         st.header("🎯 AI Analysis Results")
         
         # Display results with syntax highlighting
         st.markdown(st.session_state.analysis_result)
+        
+        # Show specific changes made
+        if st.session_state.ai_instructor and st.session_state.ai_instructor.edit_history:
+            st.subheader("✏️ Changes Made:")
+            for edit in st.session_state.ai_instructor.edit_history[-5:]:  # Show last 5 edits
+                st.success(f"✅ **{edit['result']['location']}**: '{edit['result'].get('old_value', '')}' → '{edit['result'].get('new_value', '')}'")
         
         # Download results
         st.download_button(
