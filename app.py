@@ -459,7 +459,7 @@ class AIExcelInstructor:
     
     def __init__(self, api_key: str, excel_processor: AdvancedExcelProcessor):
         genai.configure(api_key=api_key)
-        self.model = "gemini-2.0-flash"
+        self.model = "gemini-2.0-flash-exp"
         self.excel_processor = excel_processor
         self.edit_history = []
     
@@ -590,7 +590,7 @@ If only SEARCH was done, explain that the user's request requires EDIT_CELL comm
         return commands[:10]  # Limit to 10 commands
     
     def _execute_command(self, command: str) -> Dict[str, Any]:
-        """Execute a single command"""
+        """Execute a single command with improved sheet name handling"""
         try:
             command = command.strip()
             
@@ -605,7 +605,7 @@ If only SEARCH was done, explain that the user's request requires EDIT_CELL comm
                 }
             
             elif command.upper().startswith('READ_CELL:'):
-                parts = command[10:].strip().split()
+                parts = self._parse_command_with_quotes(command[10:].strip())
                 if len(parts) >= 3:
                     file_name = parts[0]
                     sheet_name = parts[1]
@@ -615,13 +615,13 @@ If only SEARCH was done, explain that the user's request requires EDIT_CELL comm
                     return {'success': False, 'error': 'Invalid READ_CELL format'}
             
             elif command.upper().startswith('EDIT_CELL:'):
-                # Parse EDIT_CELL: filename sheetname cellref newvalue
-                parts = command[10:].strip().split(None, 3)
+                # Parse EDIT_CELL with proper quote handling
+                parts = self._parse_command_with_quotes(command[10:].strip())
                 if len(parts) >= 4:
                     file_name = parts[0]
                     sheet_name = parts[1]
                     cell_ref = parts[2]
-                    new_value = parts[3].strip('"\'')  # Remove quotes if present
+                    new_value = parts[3]
                     
                     result = self.excel_processor.edit_cell(file_name, sheet_name, cell_ref, new_value)
                     
@@ -643,6 +643,44 @@ If only SEARCH was done, explain that the user's request requires EDIT_CELL comm
         except Exception as e:
             return {'success': False, 'error': f'Error executing command: {str(e)}'}
     
+    def _parse_command_with_quotes(self, command_text: str) -> List[str]:
+        """Parse command text respecting quoted strings"""
+        parts = []
+        current_part = ""
+        in_quotes = False
+        quote_char = None
+        
+        i = 0
+        while i < len(command_text):
+            char = command_text[i]
+            
+            if char in ['"', "'"] and not in_quotes:
+                # Start of quoted string
+                in_quotes = True
+                quote_char = char
+            elif char == quote_char and in_quotes:
+                # End of quoted string
+                in_quotes = False
+                quote_char = None
+                if current_part:
+                    parts.append(current_part)
+                    current_part = ""
+            elif char == ' ' and not in_quotes:
+                # Space outside quotes - separator
+                if current_part:
+                    parts.append(current_part)
+                    current_part = ""
+            else:
+                # Regular character
+                current_part += char
+            
+            i += 1
+        
+        # Add the last part if any
+        if current_part:
+            parts.append(current_part)
+        
+        return parts
     def _format_result(self, result: Dict[str, Any]) -> str:
         """Format command results for display"""
         if not result.get('success', False):
@@ -933,21 +971,97 @@ def main():
         st.header("🚀 Quick Operations")
         
         if st.session_state.files_loaded:
-            # Manual search
-            st.subheader("🔍 Manual Search")
-            search_query = st.text_input("Search query:", placeholder="Total Liabilities")
-            if st.button("🔍 Search") and search_query:
-                results = st.session_state.excel_processor.search_data(search_query)
-                if results:
-                    st.success(f"Found {len(results)} results")
-                    for result in results[:3]:
-                        st.text(f"📍 {result['file_name']}/{result['sheet_name']}/Row {result['row_number']}")
-                        st.text(f"📊 {result['content'][:100]}...")
-                else:
-                    st.info("No results found")
+                # Manual cell operations
+                st.subheader("📱 Quick Fix for Your Issue")
+                st.info("🔧 **Sheet Name Problem Detected!** Use this to make the changes manually:")
+                
+                # Show available sheets
+                if selected_file:
+                    workbook = st.session_state.excel_processor.workbooks[selected_file]
+                    available_sheets = workbook.sheetnames
+                    
+                    st.write("**📋 Available Sheets:**")
+                    for sheet in available_sheets[:10]:  # Show first 10
+                        st.text(f"• {sheet}")
+                    
+                    if len(available_sheets) > 10:
+                        st.text(f"... and {len(available_sheets) - 10} more sheets")
+                
+                st.write("**✏️ Manual Edit:**")
+                
+                # Quick edit for the specific issue
+                edit_file = st.selectbox("File:", file_names, key="quick_edit_file")
+                if edit_file:
+                    workbook = st.session_state.excel_processor.workbooks[edit_file]
+                    sheet_names = workbook.sheetnames
+                    edit_sheet = st.selectbox("Sheet:", sheet_names, key="quick_edit_sheet")
+                    
+                    if edit_sheet:
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.text_input("Cell:", value="A1", key="quick_cell", disabled=True)
+                            current_value = st.text_input("Current:", value="BEUMER India Pvt. Ltd.", key="quick_current", disabled=True)
+                        
+                        with col2:
+                            new_value = st.text_input("New Value:", value="BEUMER Bangladesh Pvt. Ltd.", key="quick_new")
+                            
+                            if st.button("✏️ Apply Change", key="quick_apply"):
+                                result = st.session_state.excel_processor.edit_cell(edit_file, edit_sheet, "A1", new_value)
+                                if result['success']:
+                                    st.success(f"✅ Updated {edit_sheet}/A1")
+                                    st.text(f"'{result['old_value']}' → '{result['new_value']}'")
+                                    st.session_state.ai_instructor.edit_history.append({
+                                        'timestamp': datetime.now().isoformat(),
+                                        'command': f"Manual edit: {edit_file}/{edit_sheet}/A1",
+                                        'result': result
+                                    })
+                                else:
+                                    st.error(result['error'])
+                
+                # Batch edit option
+                st.divider()
+                st.write("**🔄 Batch Edit All Sheets:**")
+                
+                if st.button("🚀 Change Company Name in ALL Sheets", type="primary", key="batch_edit"):
+                    if selected_file:
+                        workbook = st.session_state.excel_processor.workbooks[selected_file]
+                        success_count = 0
+                        error_count = 0
+                        
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        for i, sheet_name in enumerate(workbook.sheetnames):
+                            status_text.text(f"Processing {sheet_name}...")
+                            progress_bar.progress((i + 1) / len(workbook.sheetnames))
+                            
+                            result = st.session_state.excel_processor.edit_cell(
+                                selected_file, 
+                                sheet_name, 
+                                "A1", 
+                                "BEUMER Bangladesh Pvt. Ltd."
+                            )
+                            
+                            if result['success']:
+                                success_count += 1
+                                st.session_state.ai_instructor.edit_history.append({
+                                    'timestamp': datetime.now().isoformat(),
+                                    'command': f"Batch edit: {selected_file}/{sheet_name}/A1",
+                                    'result': result
+                                })
+                            else:
+                                error_count += 1
+                        
+                        status_text.text("✅ Batch edit completed!")
+                        st.success(f"✅ Successfully updated {success_count} sheets")
+                        if error_count > 0:
+                            st.warning(f"⚠️ {error_count} sheets had errors")
             
-            # Manual cell operations
-            st.subheader("📱 Manual Cell Operations")
+            st.divider()
+            
+            # Regular manual operations
+            st.subheader("📱 Regular Manual Operations")
             
             # File and sheet selector
             file_names = list(st.session_state.excel_processor.workbooks.keys())
