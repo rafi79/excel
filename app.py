@@ -681,6 +681,7 @@ If only SEARCH was done, explain that the user's request requires EDIT_CELL comm
             parts.append(current_part)
         
         return parts
+    
     def _format_result(self, result: Dict[str, Any]) -> str:
         """Format command results for display"""
         if not result.get('success', False):
@@ -971,12 +972,6 @@ def main():
         st.header("🚀 Quick Operations")
         
         if st.session_state.files_loaded:
-        st.divider()
-        
-        # Quick operations
-        st.header("🚀 Quick Operations")
-        
-        if st.session_state.files_loaded:
             # Manual search
             st.subheader("🔍 Manual Search")
             search_query = st.text_input("Search query:", placeholder="Total Liabilities")
@@ -1033,11 +1028,12 @@ def main():
                                 if result['success']:
                                     st.success(f"✅ Updated {edit_sheet}/A1")
                                     st.text(f"'{result['old_value']}' → '{result['new_value']}'")
-                                    st.session_state.ai_instructor.edit_history.append({
-                                        'timestamp': datetime.now().isoformat(),
-                                        'command': f"Manual edit: {edit_file}/{edit_sheet}/A1",
-                                        'result': result
-                                    })
+                                    if st.session_state.ai_instructor:
+                                        st.session_state.ai_instructor.edit_history.append({
+                                            'timestamp': datetime.now().isoformat(),
+                                            'command': f"Manual edit: {edit_file}/{edit_sheet}/A1",
+                                            'result': result
+                                        })
                                 else:
                                     st.error(result['error'])
             
@@ -1067,7 +1063,7 @@ def main():
                     
                     if result['success']:
                         success_count += 1
-                        if hasattr(st.session_state, 'ai_instructor') and st.session_state.ai_instructor:
+                        if st.session_state.ai_instructor:
                             st.session_state.ai_instructor.edit_history.append({
                                 'timestamp': datetime.now().isoformat(),
                                 'command': f"Batch edit: {selected_file}/{sheet_name}/A1",
@@ -1083,45 +1079,7 @@ def main():
             
             st.divider()
             
-            # Regular manual operations
-            st.subheader("📱 Regular Manual Operations")
-            
-            # File and sheet selector
-            file_names = list(st.session_state.excel_processor.workbooks.keys())
-            selected_file = st.selectbox("File:", file_names, key="manual_file")
-            
-            if selected_file:
-                workbook = st.session_state.excel_processor.workbooks[selected_file]
-                sheet_names = workbook.sheetnames
-                selected_sheet = st.selectbox("Sheet:", sheet_names, key="manual_sheet")
-                
-                if selected_sheet:
-                    cell_ref = st.text_input("Cell (e.g., A5):", placeholder="A5")
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        if st.button("📖 Read Cell") and cell_ref:
-                            result = st.session_state.excel_processor.read_cell(selected_file, selected_sheet, cell_ref)
-                            if result['success']:
-                                st.success(f"✅ {cell_ref}: {result['calculated_value']}")
-                                if result['is_formula']:
-                                    st.info(f"Formula: {result['raw_value']}")
-                            else:
-                                st.error(result['error'])
-                    
-                    with col2:
-                        new_value = st.text_input("New value:", placeholder="New Value")
-                        if st.button("✏️ Edit Cell") and cell_ref and new_value:
-                            result = st.session_state.excel_processor.edit_cell(selected_file, selected_sheet, cell_ref, new_value)
-                            if result['success']:
-                                st.success(f"✅ Edited {cell_ref}")
-                                st.text(f"'{result['old_value']}' → '{result['new_value']}'")
-                            else:
-                                st.error(result['error'])
-            
             # Save files
-            st.divider()
             if st.button("💾 Save All Changes", type="primary"):
                 try:
                     saved_count = 0
@@ -1174,65 +1132,70 @@ def main():
                         total_sheets = sum(data.get('total_sheets', 0) for data in file_structure.values() if 'total_sheets' in data)
                         st.info(f"📊 Processed {len(file_structure)} files with {total_sheets} sheets")
                         
+                        # Force rerun to show Excel viewer immediately
+                        st.rerun()
+                        
                     except Exception as e:
                         st.error(f"❌ Error loading files: {str(e)}")
     
+    with col2:
+        st.header("🤖 AI Request")
+        
         # Add a smart follow-up system for replacement requests
-        with col2:
-            st.subheader("🔄 Smart Follow-up Actions")
+        st.subheader("🔄 Smart Follow-up Actions")
+        
+        # Check if last request was just a search but user wanted changes
+        if (st.session_state.analysis_result and 
+            "Found" in st.session_state.analysis_result and 
+            "no changes were made" in st.session_state.analysis_result.lower()):
             
-            # Check if last request was just a search but user wanted changes
-            if (st.session_state.analysis_result and 
-                "Found" in st.session_state.analysis_result and 
-                "no changes were made" in st.session_state.analysis_result.lower()):
-                
-                st.warning("🔍 **Search completed but no edits were made!**")
-                st.info("💡 It looks like you wanted to make changes but only search was performed.")
-                
-                # Suggest follow-up action
-                follow_up_request = st.text_area(
-                    "🎯 Make the actual changes:",
-                    placeholder="Edit cell A1 in all sheets to change 'BEUMER India Pvt. Ltd.' to 'BEUMER Bangladesh Pvt. Ltd.'",
-                    height=100,
-                    help="Be specific about which cells to edit and what the new values should be"
-                )
-                
-                if st.button("🚀 Execute Follow-up Edit", type="primary") and follow_up_request:
-                    with st.spinner("🤖 AI is executing the follow-up edit..."):
-                        try:
-                            result = st.session_state.ai_instructor.process_request(follow_up_request, st.session_state.file_structure)
-                            st.session_state.analysis_result = result
-                            st.success("✅ Follow-up edit completed!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Error: {str(e)}")
+            st.warning("🔍 **Search completed but no edits were made!**")
+            st.info("💡 It looks like you wanted to make changes but only search was performed.")
             
-            else:
-                # Normal AI request input
-                user_request = st.text_area(
-                    "Tell AI what you want to do with your Excel files:",
-                    placeholder="""Examples:
+            # Suggest follow-up action
+            follow_up_request = st.text_area(
+                "🎯 Make the actual changes:",
+                placeholder="Edit cell A1 in all sheets to change 'BEUMER India Pvt. Ltd.' to 'BEUMER Bangladesh Pvt. Ltd.'",
+                height=100,
+                help="Be specific about which cells to edit and what the new values should be"
+            )
+            
+            if st.button("🚀 Execute Follow-up Edit", type="primary") and follow_up_request:
+                with st.spinner("🤖 AI is executing the follow-up edit..."):
+                    try:
+                        result = st.session_state.ai_instructor.process_request(follow_up_request, st.session_state.file_structure)
+                        st.session_state.analysis_result = result
+                        st.success("✅ Follow-up edit completed!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
+        
+        else:
+            # Normal AI request input
+            user_request = st.text_area(
+                "Tell AI what you want to do with your Excel files:",
+                placeholder="""Examples:
 • Replace 'BEUMER India Pvt. Ltd.' with 'BEUMER Bangladesh Pvt. Ltd.' in all sheets
 • Find cell A1 in all sheets and change the company name
 • Edit all instances of 'India' to 'Bangladesh' in the file
 • Change the header text in cell A1 of every sheet
 • Update company name from India to Bangladesh everywhere""",
-                    height=150,
-                    help="Be specific about what you want to change and what the new values should be"
-                )
-                
-                if st.button("🎯 Execute AI Request", type="primary", disabled=not (st.session_state.files_loaded and user_request)):
-                    with st.spinner("🤖 AI is analyzing your request and executing Excel operations..."):
-                        try:
-                            result = st.session_state.ai_instructor.process_request(user_request, st.session_state.file_structure)
-                            st.session_state.analysis_result = result
-                            st.success("✅ AI request completed!")
-                            
-                            # Force rerun to show updated Excel viewer
-                            st.rerun()
-                            
-                        except Exception as e:
-                            st.error(f"❌ Error: {str(e)}")
+                height=150,
+                help="Be specific about what you want to change and what the new values should be"
+            )
+            
+            if st.button("🎯 Execute AI Request", type="primary", disabled=not (st.session_state.files_loaded and user_request)):
+                with st.spinner("🤖 AI is analyzing your request and executing Excel operations..."):
+                    try:
+                        result = st.session_state.ai_instructor.process_request(user_request, st.session_state.file_structure)
+                        st.session_state.analysis_result = result
+                        st.success("✅ AI request completed!")
+                        
+                        # Force rerun to show updated Excel viewer
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
     
     # Excel File Viewer - Show IMMEDIATELY after files are loaded
     if st.session_state.files_loaded:
@@ -1291,15 +1254,6 @@ def main():
             file_name="ai_excel_analysis.txt",
             mime="text/plain"
         )
-        
-        # Show edit history if available
-        if st.session_state.ai_instructor and st.session_state.ai_instructor.edit_history:
-            with st.expander("📝 Edit History"):
-                for i, edit in enumerate(st.session_state.ai_instructor.edit_history[-10:], 1):
-                    st.text(f"{i}. {edit['timestamp'][:19]}")
-                    st.text(f"   Command: {edit['command']}")
-                    st.text(f"   Result: {edit['result']['location']} - {edit['result'].get('old_value', '')} → {edit['result'].get('new_value', '')}")
-                    st.divider()
     
     # Instructions and Examples
     if not st.session_state.files_loaded:
@@ -1356,9 +1310,9 @@ def main():
         st.subheader("📝 Example Natural Language Requests")
         
         examples = [
-            "Find 'Total Liabilities & Shareholders' equity' and change it to 'Total Liabilities'",
+            "Replace 'BEUMER India Pvt. Ltd.' with 'BEUMER Bangladesh Pvt. Ltd.' in all sheets",
             "Search for all revenue data and show me the totals",
-            "Edit cell A32 in Balance Sheet to show 'Total Liabilities'",
+            "Edit cell A1 in all sheets to show the new company name",
             "Find all cells containing formulas and show their calculated values",
             "Replace 'Aug-22' with 'August 2022' in all headers",
             "Calculate the sum of column K from rows 15 to 25",
