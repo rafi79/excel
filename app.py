@@ -459,7 +459,7 @@ class AIExcelInstructor:
     
     def __init__(self, api_key: str, excel_processor: AdvancedExcelProcessor):
         genai.configure(api_key=api_key)
-        self.model = "gemini-2.0-flash"
+        self.model = "gemini-2.0-flash-exp"
         self.excel_processor = excel_processor
         self.edit_history = []
     
@@ -480,19 +480,27 @@ AVAILABLE COMMANDS:
 
 CRITICAL RULES:
 - Always use exact Excel cell references like A1, B5, C10, etc.
-- Search first to find the exact location of data
-- Use the search results to determine precise cell references
-- File names may have spaces - handle them correctly
+- When user wants to CHANGE/REPLACE/UPDATE text, you MUST use EDIT_CELL commands
+- Search first to find locations, then EDIT the cells with new values
+- Use the search results to determine precise cell references for editing
 
 USER REQUEST: {user_request}
 
+IMPORTANT: If the user wants to change/replace/update any text or values, you MUST:
+1. SEARCH to find the exact locations
+2. EDIT_CELL to actually make the changes
+3. Do NOT just search - you must execute EDIT_CELL commands to modify the data
+
 Execute the request step by step:
 1. Search to find relevant data
-2. Read specific cells if needed
-3. Edit cells with exact references
-4. Provide clear results
+2. Edit specific cells with exact references
+3. Provide clear results
 
 Format your response with actual command execution:
+SEARCH: [search term]
+EDIT_CELL: [filename] [sheetname] [cellref] [newvalue]
+EDIT_CELL: [filename] [sheetname] [cellref] [newvalue]
+...
 """
 
             model = genai.GenerativeModel(self.model)
@@ -523,6 +531,9 @@ Provide a comprehensive summary of:
 4. Any recommendations
 
 Original request: {user_request}
+
+IMPORTANT: If EDIT_CELL commands were executed, highlight the actual changes made.
+If only SEARCH was done, explain that the user's request requires EDIT_CELL commands to actually modify the data.
 """
             
             final_response = model.generate_content(final_prompt)
@@ -548,10 +559,33 @@ Original request: {user_request}
         
         for line in lines:
             line = line.strip()
+            
+            # Look for specific command patterns
             if any(cmd in line.upper() for cmd in ['SEARCH:', 'READ_CELL:', 'EDIT_CELL:']):
                 # Clean up the command
                 command = re.sub(r'^\d+\.\s*', '', line)  # Remove numbering
+                command = command.replace('```', '').strip()  # Remove markdown
+                
+                # Handle quoted commands
+                if command.startswith('"') and command.endswith('"'):
+                    command = command[1:-1]
+                
                 commands.append(command.strip())
+            
+            # Also look for commands in code blocks or bullet points
+            elif line.startswith('- ') and any(cmd in line.upper() for cmd in ['SEARCH:', 'READ_CELL:', 'EDIT_CELL:']):
+                command = line[2:].strip()  # Remove "- "
+                commands.append(command)
+        
+        # If we found search results but no edit commands, and the user wanted to change something
+        # Generate edit commands automatically
+        if len([cmd for cmd in commands if 'EDIT_CELL' in cmd.upper()]) == 0:
+            # Check if we have search results and user wants to change something
+            search_commands = [cmd for cmd in commands if 'SEARCH:' in cmd.upper()]
+            if search_commands and any(word in text.lower() for word in ['change', 'replace', 'update', 'edit', 'modify']):
+                # We need to generate edit commands based on search results
+                # This will be handled in the execution phase
+                pass
         
         return commands[:10]  # Limit to 10 commands
     
@@ -1006,33 +1040,62 @@ def main():
                     except Exception as e:
                         st.error(f"❌ Error loading files: {str(e)}")
     
-    with col2:
-        st.header("🤖 AI Request")
-        user_request = st.text_area(
-            "Tell AI what you want to do with your Excel files:",
-            placeholder="""Examples:
-• Find "Total Liabilities & Shareholders' equity" and change it to "Total Liabilities"
-• Search for all cells containing "revenue" and show their values
-• Edit cell B5 in Balance Sheet to show "Updated Value"
-• Find the highest value in column C and tell me its location
-• Replace all instances of "Aug-22" with "August 2022"
-• Calculate the sum of all values in row 15""",
-            height=150,
-            help="Use natural language - AI will understand and execute precise Excel operations"
-        )
-        
-        if st.button("🎯 Execute AI Request", type="primary", disabled=not (st.session_state.files_loaded and user_request)):
-            with st.spinner("🤖 AI is analyzing your request and executing Excel operations..."):
-                try:
-                    result = st.session_state.ai_instructor.process_request(user_request, st.session_state.file_structure)
-                    st.session_state.analysis_result = result
-                    st.success("✅ AI request completed!")
-                    
-                    # Force rerun to show updated Excel viewer
-                    st.rerun()
-                    
-                except Exception as e:
-                    st.error(f"❌ Error: {str(e)}")
+        # Add a smart follow-up system for replacement requests
+        with col2:
+            st.subheader("🔄 Smart Follow-up Actions")
+            
+            # Check if last request was just a search but user wanted changes
+            if (st.session_state.analysis_result and 
+                "Found" in st.session_state.analysis_result and 
+                "no changes were made" in st.session_state.analysis_result.lower()):
+                
+                st.warning("🔍 **Search completed but no edits were made!**")
+                st.info("💡 It looks like you wanted to make changes but only search was performed.")
+                
+                # Suggest follow-up action
+                follow_up_request = st.text_area(
+                    "🎯 Make the actual changes:",
+                    placeholder="Edit cell A1 in all sheets to change 'BEUMER India Pvt. Ltd.' to 'BEUMER Bangladesh Pvt. Ltd.'",
+                    height=100,
+                    help="Be specific about which cells to edit and what the new values should be"
+                )
+                
+                if st.button("🚀 Execute Follow-up Edit", type="primary") and follow_up_request:
+                    with st.spinner("🤖 AI is executing the follow-up edit..."):
+                        try:
+                            result = st.session_state.ai_instructor.process_request(follow_up_request, st.session_state.file_structure)
+                            st.session_state.analysis_result = result
+                            st.success("✅ Follow-up edit completed!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error: {str(e)}")
+            
+            else:
+                # Normal AI request input
+                user_request = st.text_area(
+                    "Tell AI what you want to do with your Excel files:",
+                    placeholder="""Examples:
+• Replace 'BEUMER India Pvt. Ltd.' with 'BEUMER Bangladesh Pvt. Ltd.' in all sheets
+• Find cell A1 in all sheets and change the company name
+• Edit all instances of 'India' to 'Bangladesh' in the file
+• Change the header text in cell A1 of every sheet
+• Update company name from India to Bangladesh everywhere""",
+                    height=150,
+                    help="Be specific about what you want to change and what the new values should be"
+                )
+                
+                if st.button("🎯 Execute AI Request", type="primary", disabled=not (st.session_state.files_loaded and user_request)):
+                    with st.spinner("🤖 AI is analyzing your request and executing Excel operations..."):
+                        try:
+                            result = st.session_state.ai_instructor.process_request(user_request, st.session_state.file_structure)
+                            st.session_state.analysis_result = result
+                            st.success("✅ AI request completed!")
+                            
+                            # Force rerun to show updated Excel viewer
+                            st.rerun()
+                            
+                        except Exception as e:
+                            st.error(f"❌ Error: {str(e)}")
     
     # Excel File Viewer - Show IMMEDIATELY after files are loaded
     if st.session_state.files_loaded:
