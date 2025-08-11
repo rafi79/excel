@@ -459,7 +459,7 @@ class AIExcelInstructor:
     
     def __init__(self, api_key: str, excel_processor: AdvancedExcelProcessor):
         genai.configure(api_key=api_key)
-        self.model = "gemini-2.0-flash-exp"
+        self.model = "gemini-2.0-flash"
         self.excel_processor = excel_processor
         self.edit_history = []
     
