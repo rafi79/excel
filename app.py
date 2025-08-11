@@ -651,7 +651,7 @@ if 'analysis_result' not in st.session_state:
     st.session_state.analysis_result = ""
 
 def create_excel_like_viewer(file_name: str, sheet_name: str, excel_processor: AdvancedExcelProcessor):
-    """Create Excel-like viewer with highlighted changes"""
+    """Create Excel-like viewer that actually shows the spreadsheet data"""
     try:
         if file_name not in excel_processor.workbooks:
             st.error("File not found")
@@ -660,178 +660,211 @@ def create_excel_like_viewer(file_name: str, sheet_name: str, excel_processor: A
         workbook = excel_processor.workbooks[file_name]
         sheet = workbook[sheet_name]
         
-        # Create grid data
-        max_row = min(sheet.max_row, 50)  # Show more rows
-        max_col = min(sheet.max_column, 15)  # Show more columns
+        st.subheader(f"📊 {file_name} / {sheet_name}")
         
-        # Create column headers (A, B, C, etc.)
-        columns = ['Row'] + [get_column_letter(i) for i in range(1, max_col + 1)]
+        # Show basic info
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Rows", sheet.max_row)
+        col2.metric("Total Columns", sheet.max_column)
         
-        # Create data grid with change highlighting
-        grid_data = []
+        # Get recent changes for highlighting
         changed_cells = set()
-        
-        # Get recent edits for highlighting
         if hasattr(st.session_state, 'ai_instructor') and st.session_state.ai_instructor:
             for edit in st.session_state.ai_instructor.edit_history:
                 if file_name in edit['result'].get('location', ''):
-                    # Extract cell reference from location
                     location_parts = edit['result']['location'].split('/')
                     if len(location_parts) >= 3:
                         cell_ref = location_parts[-1]
                         changed_cells.add(cell_ref)
         
-        for row_num in range(1, max_row + 1):
-            row_data = [f"📍 {row_num}"]  # Row number with emoji
+        col3.metric("🔥 Changed Cells", len(changed_cells))
+        
+        with col4:
+            if st.button("🔄 Refresh View"):
+                st.rerun()
+        
+        # Show change indicators
+        if changed_cells:
+            st.success(f"🔥 **Recently changed**: {', '.join(sorted(changed_cells))}")
+        
+        # Create the actual Excel-like table
+        max_rows_to_show = 40
+        max_cols_to_show = 12
+        
+        # Prepare data for display
+        excel_data = []
+        
+        # Create header row with column letters
+        header_row = [""] + [get_column_letter(col) for col in range(1, min(sheet.max_column + 1, max_cols_to_show + 1))]
+        
+        # Add data rows
+        for row_num in range(1, min(sheet.max_row + 1, max_rows_to_show + 1)):
+            row_data = [str(row_num)]  # Row number
             
-            for col_num in range(1, max_col + 1):
+            for col_num in range(1, min(sheet.max_column + 1, max_cols_to_show + 1)):
                 cell = sheet.cell(row=row_num, column=col_num)
                 cell_ref = f"{get_column_letter(col_num)}{row_num}"
                 
-                # Get display value
+                # Get cell value
+                cell_value = ""
                 if cell.value is not None:
                     if cell.data_type == 'f':  # Formula
                         try:
+                            # Try to get calculated value
                             calc_workbook = load_workbook(excel_processor.file_paths[file_name], data_only=True)
-                            calc_cell = calc_workbook[sheet_name].cell(row=row_num, column=col_num)
-                            display_value = calc_cell.value if calc_cell.value is not None else str(cell.value)
+                            calc_sheet = calc_workbook[sheet_name]
+                            calc_cell = calc_sheet.cell(row=row_num, column=col_num)
+                            if calc_cell.value is not None:
+                                cell_value = str(calc_cell.value)
+                            else:
+                                cell_value = str(cell.value)  # Show formula if calc fails
                         except:
-                            display_value = str(cell.value)
+                            cell_value = str(cell.value)
                     else:
-                        display_value = str(cell.value)
-                    
-                    # Highlight changed cells
-                    if cell_ref in changed_cells:
-                        display_value = f"🔥 {display_value}"
-                else:
-                    display_value = ""
+                        cell_value = str(cell.value)
                 
-                row_data.append(display_value)
+                # Highlight changed cells
+                if cell_ref in changed_cells:
+                    cell_value = f"🔥 {cell_value}"
+                
+                row_data.append(cell_value)
             
-            grid_data.append(row_data)
+            excel_data.append(row_data)
         
-        # Create DataFrame
-        df = pd.DataFrame(grid_data, columns=columns)
+        # Create DataFrame with proper structure
+        df = pd.DataFrame(excel_data, columns=header_row)
         
-        # Display with custom styling
-        st.subheader(f"📊 {file_name} / {sheet_name}")
-        
-        # Show metrics and change indicators
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Rows", sheet.max_row)
-        col2.metric("Total Columns", sheet.max_column) 
-        col3.metric("Showing Rows", min(sheet.max_row, 50))
-        col4.metric("🔥 Changed Cells", len(changed_cells))
-        
-        # Show change legend if there are changes
-        if changed_cells:
-            st.info(f"🔥 **Recently changed cells**: {', '.join(sorted(changed_cells))}")
-        
-        # Display the grid with enhanced formatting
+        # Display the Excel-like table
         st.dataframe(
             df,
             use_container_width=True,
-            height=600,  # Taller for better viewing
+            height=800,  # Taller for better viewing
+            hide_index=True,
             column_config={
-                "Row": st.column_config.TextColumn(
-                    "Row",
-                    help="Excel row number",
+                "": st.column_config.TextColumn(
+                    "",
                     width="small",
+                    help="Row numbers"
                 )
             }
         )
         
-        # Quick action buttons
+        # Quick navigation and tools
         st.divider()
-        col1, col2, col3, col4 = st.columns(4)
+        
+        # Show specific cell info
+        col1, col2, col3 = st.columns(3)
         
         with col1:
+            st.write("**📍 Quick Cell Lookup:**")
+            lookup_cell = st.text_input("Enter cell (e.g., A32):", key=f"lookup_{file_name}_{sheet_name}")
+            if lookup_cell and st.button("🔍 Find Cell", key=f"find_{file_name}_{sheet_name}"):
+                try:
+                    from openpyxl.utils import coordinate_from_string
+                    col_letter, row_num = coordinate_from_string(lookup_cell.upper())
+                    cell = sheet.cell(row=row_num, column=column_index_from_string(col_letter))
+                    
+                    if cell.value is not None:
+                        if cell.data_type == 'f':
+                            st.info(f"**{lookup_cell.upper()}**: Formula = `{cell.value}`")
+                            # Try to show calculated value
+                            try:
+                                calc_workbook = load_workbook(excel_processor.file_paths[file_name], data_only=True)
+                                calc_cell = calc_workbook[sheet_name].cell(row=row_num, column=column_index_from_string(col_letter))
+                                if calc_cell.value is not None:
+                                    st.success(f"**Calculated Value**: {calc_cell.value}")
+                            except:
+                                pass
+                        else:
+                            st.success(f"**{lookup_cell.upper()}**: {cell.value}")
+                    else:
+                        st.warning(f"**{lookup_cell.upper()}**: Empty cell")
+                except Exception as e:
+                    st.error(f"Invalid cell reference: {lookup_cell}")
+        
+        with col2:
+            st.write("**📂 Download Options:**")
             # Download as CSV
             df_clean = df.copy()
-            # Remove row column and emojis for clean CSV
-            df_clean = df_clean.drop('Row', axis=1)
+            # Remove emojis for clean export
             for col in df_clean.columns:
-                df_clean[col] = df_clean[col].astype(str).str.replace('🔥 ', '', regex=False)
+                if col != "":
+                    df_clean[col] = df_clean[col].astype(str).str.replace('🔥 ', '', regex=False)
             
             csv = df_clean.to_csv(index=False)
             st.download_button(
-                "📥 CSV",
+                "📥 Download CSV",
                 data=csv,
                 file_name=f"{file_name}_{sheet_name}.csv",
-                mime="text/csv"
+                mime="text/csv",
+                key=f"csv_{file_name}_{sheet_name}"
             )
-        
-        with col2:
-            # Download modified Excel
+            
+            # Download Excel
             try:
                 file_path = excel_processor.file_paths[file_name]
                 with open(file_path, 'rb') as f:
                     excel_data = f.read()
                 
                 st.download_button(
-                    "📥 Excel",
+                    "📥 Download Excel",
                     data=excel_data,
                     file_name=f"modified_{file_name}",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"excel_{file_name}_{sheet_name}"
                 )
             except Exception as e:
                 st.error(f"Download error: {str(e)}")
         
         with col3:
-            if st.button("🔍 Find Changes"):
-                if changed_cells:
-                    st.success(f"Found changes in: {', '.join(sorted(changed_cells))}")
-                else:
-                    st.info("No changes detected yet")
-        
-        with col4:
-            if st.button("🔄 Refresh Data"):
-                st.rerun()
-        
-        # Show detailed change history for this sheet
-        if hasattr(st.session_state, 'ai_instructor') and st.session_state.ai_instructor:
-            sheet_edits = [edit for edit in st.session_state.ai_instructor.edit_history 
-                          if file_name in edit['result'].get('location', '') and sheet_name in edit['result'].get('location', '')]
+            st.write("**🔬 Sheet Analysis:**")
             
-            if sheet_edits:
-                with st.expander(f"📝 Edit History for {sheet_name} ({len(sheet_edits)} changes)"):
+            # Count formulas
+            formula_count = 0
+            for row in range(1, min(sheet.max_row + 1, 100)):
+                for col in range(1, min(sheet.max_column + 1, 20)):
+                    cell = sheet.cell(row=row, column=col)
+                    if cell.data_type == 'f':
+                        formula_count += 1
+            
+            st.metric("Formulas Found", formula_count)
+            
+            # Show merge info
+            sheet_key = f"{file_name}:{sheet_name}"
+            if sheet_key in excel_processor.merged_cells_info:
+                merged_count = len(excel_processor.merged_cells_info[sheet_key])
+                st.metric("Merged Ranges", merged_count)
+        
+        # Detailed change history
+        if changed_cells:
+            with st.expander(f"📝 Detailed Edit History ({len(changed_cells)} changes)"):
+                if hasattr(st.session_state, 'ai_instructor') and st.session_state.ai_instructor:
+                    sheet_edits = [edit for edit in st.session_state.ai_instructor.edit_history 
+                                  if file_name in edit['result'].get('location', '') and sheet_name in edit['result'].get('location', '')]
+                    
                     for i, edit in enumerate(sheet_edits, 1):
-                        st.write(f"**{i}.** {edit['timestamp'][:19]}")
-                        st.write(f"   📍 **Location**: {edit['result']['location']}")
-                        st.write(f"   🔄 **Change**: `{edit['result'].get('old_value', '')}` → `{edit['result'].get('new_value', '')}`")
+                        st.write(f"**Change {i}:** {edit['timestamp'][:19]}")
+                        st.write(f"📍 **Cell**: {edit['result']['location'].split('/')[-1]}")
+                        st.write(f"🔄 **Change**: `{edit['result'].get('old_value', 'empty')}` → `{edit['result'].get('new_value', 'empty')}`")
                         st.divider()
         
-        # Show merged cells and formulas info
-        sheet_key = f"{file_name}:{sheet_name}"
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if sheet_key in excel_processor.merged_cells_info:
-                merged_cells = excel_processor.merged_cells_info[sheet_key]
-                if merged_cells:
-                    with st.expander(f"📋 Merged Cells ({len(merged_cells)})"):
-                        for merged in merged_cells[:10]:  # Show first 10
-                            st.text(f"Range: {merged['range']}")
-        
-        with col2:
-            # Show formulas
-            formulas_found = 0
-            with st.expander("🔬 Formulas Found"):
-                for row_num in range(1, min(sheet.max_row + 1, 50)):
-                    for col_num in range(1, min(sheet.max_column + 1, 15)):
-                        cell = sheet.cell(row=row_num, column=col_num)
-                        if cell.data_type == 'f':
-                            cell_ref = f"{get_column_letter(col_num)}{row_num}"
-                            st.text(f"{cell_ref}: {cell.value}")
-                            formulas_found += 1
-                            if formulas_found >= 10:  # Limit display
-                                break
-                    if formulas_found >= 10:
+        # Show sample formulas
+        formulas_found = []
+        for row in range(1, min(sheet.max_row + 1, 50)):
+            for col in range(1, min(sheet.max_column + 1, 15)):
+                cell = sheet.cell(row=row, column=col)
+                if cell.data_type == 'f':
+                    cell_ref = f"{get_column_letter(col)}{row}"
+                    formulas_found.append((cell_ref, str(cell.value)))
+                    if len(formulas_found) >= 10:
                         break
-                
-                if formulas_found == 0:
-                    st.text("No formulas found in visible range")
+            if len(formulas_found) >= 10:
+                break
+        
+        if formulas_found:
+            with st.expander(f"🔬 Formulas in Sheet ({len(formulas_found)} shown)"):
+                for cell_ref, formula in formulas_found:
+                    st.code(f"{cell_ref}: {formula}")
         
     except Exception as e:
         st.error(f"Error displaying sheet: {str(e)}")
